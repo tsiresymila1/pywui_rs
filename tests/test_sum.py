@@ -1,5 +1,11 @@
-from pywui_rs import WindowManager
+from pywui_rs import PyWui
 
-app = WindowManager()
+app = PyWui()
+
+
+@app.command("test")
+def test():
+    print("Hello")
+
 
 app.run()
