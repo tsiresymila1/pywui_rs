@@ -1,0 +1,17 @@
+[package]
+name = "pywui_rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "pywui_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json = "1.0.133"
+mime_guess = "2.0.5"
+wry = { version = "0.47.2", features = ["devtools", "fullscreen", "linux-body", "mac-proxy", "serde", "tracing", "transparent"] }
+tao = { version = "0.30.8", features = ["serde"] }
+pyo3 = "0.23.2"
+serde = { version = "1.0.215", features = ["derive"] }
