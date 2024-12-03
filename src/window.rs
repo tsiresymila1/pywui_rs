@@ -12,6 +12,8 @@ pub struct WindowAttributesConfig {
     pub maximizable: Option<bool>,
     pub closable: Option<bool>,
     pub title: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
     pub maximized: Option<bool>,
     pub visible: Option<bool>,
     pub transparent: Option<bool>,
