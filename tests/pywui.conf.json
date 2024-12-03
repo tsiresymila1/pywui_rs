@@ -1,0 +1,33 @@
+{
+  "build": {
+    "beforeBuildCommand": "pnpm run build",
+    "beforeDevCommand": "pnpm run dev",
+    "devPath": "https://tauri.app"
+  },
+  "package": {
+    "productName": "Name",
+    "version": "0.0.1"
+  },
+  "pywui": {
+    "windows": [
+      {
+        "label": "splashscreen",
+        "width": 500,
+        "height": 500,
+        "center": true,
+        "decorations": false,
+        "webview": {
+          "url": "splashscreen.html"
+        }
+      },
+      {
+        "title": "Media Downloader",
+        "width": 1080,
+        "height": 720,
+        "titleBarStyle": "Transparent",
+        "visible": true,
+        "center": true
+      }
+    ]
+  }
+}

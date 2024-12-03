@@ -1,5 +1,6 @@
+import os
 from functools import wraps
-from typing import Callable
+from typing import Callable, Union
 
 from .pywui_rs import WindowManager
 
@@ -9,12 +10,15 @@ __all__ = [
 
 
 class PyWui:
-    def __init__(self):
-        self.manager = WindowManager()
+    def __init__(self, config_path: Union[str, None] = None):
+        full_path = os.path.join(config_path or os.getcwd(), 'pywui.conf.json')
+        if not os.path.exists(full_path):
+            raise Exception(f"{full_path} not exist")
+        self._manager = WindowManager(config_path=full_path)
 
     def command(self, name: str):
         def decorator(callback: Callable):
-            self.manager.add_command(name, callback)
+            self._manager.add_command(name, callback)
 
             @wraps(callback)
             async def wrapper(*args, **kwargs):
@@ -26,7 +30,7 @@ class PyWui:
 
     def listener(self, event: str):
         def decorator(callback: Callable):
-            self.manager.add_listener(event, callback)
+            self._manager.add_listener(event, callback)
 
             @wraps(callback)
             async def wrapper(*args, **kwargs):
@@ -37,4 +41,4 @@ class PyWui:
         return decorator
 
     def run(self):
-        self.manager.run()
+        self._manager.run()
