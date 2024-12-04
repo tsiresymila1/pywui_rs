@@ -4,7 +4,6 @@ use wry::{WebViewAttributes, WebViewId};
 
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct WebViewAttributesConfig {
-    pub label: Option<String>,
     pub user_agent: Option<String>,
     pub visible: Option<bool>,
     pub transparent: Option<bool>,
@@ -22,6 +21,16 @@ pub struct WebViewAttributesConfig {
     pub focused: Option<bool>,
 }
 
+fn ensure_valid_url(url: Option<String>) -> Option<String> {
+    url.map(|mut u| {
+        let valid_protocols = ["http://", "https://", "ftp://", "file://", "ws://", "wss://"];
+        if !valid_protocols.iter().any(|protocol| u.starts_with(protocol)) {
+            u = format!("pywui://pywui/{}", u);
+        }
+        u
+    })
+}
+
 impl From<WebViewAttributesConfig> for WebViewAttributes<'static> {
     fn from(config: WebViewAttributesConfig) -> Self {
         WebViewAttributes {
@@ -29,13 +38,13 @@ impl From<WebViewAttributesConfig> for WebViewAttributes<'static> {
             visible: config.visible.unwrap_or(true),
             transparent: config.transparent.unwrap_or(false),
             background_color: config.background_color,
-            url: config.url,
+            url: ensure_valid_url(config.url),
             zoom_hotkeys_enabled: config.zoom_hotkeys_enabled.unwrap_or(true),
             html: config.html,
             initialization_scripts: config.initialization_scripts.unwrap_or_default(),
             custom_protocols: HashMap::new(),
             clipboard: config.clipboard.unwrap_or(false),
-            devtools: config.devtools.unwrap_or(false),
+            devtools: config.devtools.unwrap_or(true),
             accept_first_mouse: config.accept_first_mouse.unwrap_or(false),
             back_forward_navigation_gestures: config.back_forward_navigation_gestures.unwrap_or(false),
             document_title_changed_handler: None, // Cannot deserialize, set as None

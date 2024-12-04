@@ -6,6 +6,7 @@ use crate::webview::WebViewAttributesConfig;
 
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct WindowAttributesConfig {
+    pub label: Option<String>,
     pub inner_size: Option<Size>,
     pub resizable: Option<bool>,
     pub minimizable: Option<bool>,

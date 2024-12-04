@@ -28,11 +28,11 @@ pub fn json_to_py(py: Python, value: &Value) -> PyObject {
         }
         Value::String(s) => s.into_py(py),
         Value::Array(arr) => {
-            let py_list = PyList::new_bound(py, arr.iter().map(|v| json_to_py(py, v)));
-            py_list.into_py(py)
+            let py_list = PyList::new(py, arr.iter().map(|v| json_to_py(py, v)));
+            py_list.ok().into_py(py)
         }
         Value::Object(obj) => {
-            let py_dict = PyDict::new_bound(py);
+            let py_dict = PyDict::new(py);
             for (k, v) in obj {
                 py_dict.set_item(k, json_to_py(py, v)).unwrap();
             }

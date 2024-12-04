@@ -10,11 +10,11 @@ __all__ = [
 
 
 class PyWui:
-    def __init__(self, config_path: Union[str, None] = None):
+    def __init__(self, assets_dir: str, config_path: Union[str, None] = None):
         full_path = os.path.join(config_path or os.getcwd(), 'pywui.conf.json')
         if not os.path.exists(full_path):
             raise Exception(f"{full_path} not exist")
-        self._manager = WindowManager(config_path=full_path)
+        self._manager = WindowManager(config_path=full_path, assets_dir=assets_dir)
 
     def command(self, name: str):
         def decorator(callback: Callable):

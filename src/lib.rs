@@ -1,25 +1,31 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
 use http::header::CONTENT_TYPE;
 use http::Response;
-
 use image::EncodableLayout;
 use pyo3::prelude::*;
-use pyo3::types::PyFunction;
+use pyo3::types::{PyFunction, PyTuple};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tao::{event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget}, window::{Window, WindowBuilder, WindowId}};
+use tao::{
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget},
+    window::{Window, WindowBuilder, WindowId},
+};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::EventLoopProxy;
 use tao::window::Icon;
-use wry::{http::Request, RequestAsyncResponder, WebView, WebViewBuilder, WebViewExtMacOS, WebViewId};
+use wry::{
+    http::Request, RequestAsyncResponder, WebView, WebViewBuilder, WebViewExtMacOS, WebViewId,
+};
 use wry::WebViewAttributes;
 
 use crate::config::Config;
+use crate::init_script::get_init_script;
 use crate::util::{json_to_py, load_config, py_to_json};
 use crate::window::WindowAttributesConfig;
 
@@ -27,44 +33,68 @@ mod config;
 mod util;
 mod webview;
 mod window;
+mod init_script;
 
 fn get_wry_response(
     request: Request<Vec<u8>>,
     responder: RequestAsyncResponder,
+    base_path: &PathBuf,
 ) {
     let path = request.uri().path();
-    // Read the file content from file path
-    let root = PathBuf::from("examples/custom_protocol");
-    let path = if path == "/" {
+    let relative_path = if path == "/" {
         "index.html"
     } else {
         &path[1..]
     };
-    let content = fs::read(fs::canonicalize(root.join(path)).unwrap()).unwrap();
-    let mimetype = if path.ends_with(".html") || path == "/" {
-        "text/html"
-    } else if path.ends_with(".js") {
-        "text/javascript"
-    } else if path.ends_with(".png") {
-        "image/png"
-    } else if path.ends_with(".wasm") {
-        "application/wasm"
-    } else {
-        responder.respond(Response::builder()
-            .header(CONTENT_TYPE, "text/plain")
-            .status(500)
-            .body("Not found".to_string().as_bytes().to_vec())
-            .unwrap());
+
+    let file_path = base_path.join(relative_path);
+    println!("File path ::: {:?}: path: {}", file_path, request.uri());
+    if !file_path.exists() {
+        responder.respond(
+            Response::builder()
+                .header(CONTENT_TYPE, "text/plain")
+                .status(404)
+                .body(b"File not found".to_vec())
+                .unwrap(),
+        );
         return;
-    };
-    responder.respond(Response::builder()
-        .header(CONTENT_TYPE, mimetype)
-        .body(content)
-        .unwrap())
+    }
+
+    match fs::read(&file_path) {
+        Ok(content) => {
+            let mimetype = match file_path.extension().and_then(|ext| ext.to_str()) {
+                Some("html") => "text/html",
+                Some("js") => "text/javascript",
+                Some("css") => "text/css",
+                Some("png") => "image/png",
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("gif") => "image/gif",
+                Some("wasm") => "application/wasm",
+                Some("json") => "application/json",
+                _ => "application/octet-stream",
+            };
+
+            responder.respond(
+                Response::builder()
+                    .header(CONTENT_TYPE, mimetype)
+                    .status(200)
+                    .body(content)
+                    .unwrap(),
+            );
+        }
+        Err(_) => {
+            responder.respond(
+                Response::builder()
+                    .header(CONTENT_TYPE, "text/plain")
+                    .status(500)
+                    .body(b"Failed to read the file".to_vec())
+                    .unwrap(),
+            );
+        }
+    }
 }
 
 fn create_new_window(
-    title: String,
     webview: WebViewAttributes,
     window: WindowAttributesConfig,
     event_loop: &EventLoopWindowTarget<UserEvent>,
@@ -106,7 +136,7 @@ fn create_new_window(
         .unwrap();
     let builder = WebViewBuilder::with_attributes(webview);
     #[cfg(not(target_os = "linux"))]
-    let webview = builder.build(&window).unwrap();
+    let webview = builder.with_initialization_script(get_init_script()).build(&window).unwrap();
     #[cfg(target_os = "linux")]
     let webview = {
         use tao::platform::unix::WindowExtUnix;
@@ -121,12 +151,14 @@ fn create_new_window(
 enum UserEvent {
     Response(ResponseData),
     Emit(EmitData),
-    Exit(WindowId),
+    Exit(),
+    Close(WindowId),
 }
 
 #[derive(Serialize, Deserialize)]
 struct IPCData {
     event_type: String,
+    command: Option<String>,
     request_id: String,
     args: Value,
 }
@@ -134,7 +166,8 @@ struct IPCData {
 #[derive(Debug, Serialize, Deserialize)]
 struct ResponseData {
     request_id: String,
-    data: Box<Value>,
+    result: Box<Value>,
+    error: Box<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,19 +183,21 @@ struct WindowManager {
     listeners: Arc<Mutex<HashMap<String, Py<PyFunction>>>>,
     config: Arc<Mutex<Config>>,
     proxy: Option<Arc<Mutex<EventLoopProxy<UserEvent>>>>,
+    base_path: PathBuf,
 }
 
 #[pymethods]
 impl WindowManager {
     #[new]
-    #[pyo3(text_signature = "(config_path)")]
-    fn py_new(config_path: String) -> PyResult<Self> {
+    #[pyo3(text_signature = "(config_path, assets_dir)")]
+    fn py_new(config_path: String, assets_dir: String) -> PyResult<Self> {
         Ok(Self {
             webviews: Arc::new(Mutex::new(HashMap::new())),
             commands: Arc::new(Mutex::new(HashMap::new())),
             listeners: Arc::new(Mutex::new(HashMap::new())),
             config: Arc::new(Mutex::new(load_config(config_path.as_str()).unwrap())),
             proxy: None,
+            base_path: PathBuf::from(assets_dir),
         })
     }
 
@@ -189,12 +224,14 @@ impl WindowManager {
         // webview.evaluate_script().unwrap()
     }
     #[pyo3(text_signature = "(self,label= None)")]
-    fn exit(&self, label: Option<String>) {
+    fn close_window(&self, label: Option<String>) {
         if let Some(proxy) = self.proxy.clone() {
-            if let Some(window_id) = self.webviews.clone().lock().unwrap().get(&label.unwrap().clone()) {
-                Python::with_gil(|py| {
-                    proxy.lock().unwrap().send_event(UserEvent::Exit(*window_id)).unwrap();
-                })
+            if let Some(lbl) = label {
+                if let Some(window_id) = self.webviews.clone().lock().unwrap().get(&lbl) {
+                    proxy.lock().unwrap().send_event(UserEvent::Close(*window_id)).unwrap();
+                }
+            } else {
+                proxy.lock().unwrap().send_event(UserEvent::Exit()).unwrap();
             }
         }
         // webview.evaluate_script().unwrap()
@@ -214,8 +251,11 @@ impl WindowManager {
         let listeners = listener.clone();
         let commands = command.clone();
 
+        let mut webview_cloned = self.webviews.clone();
+        let base_bath = self.base_path.clone();
+
         let protocol_handler: Arc<Mutex<Box<dyn Fn(WebViewId, Request<Vec<u8>>, RequestAsyncResponder)>>> = Arc::new(Mutex::new(Box::new(move |id, request, responder| {
-            get_wry_response(request, responder)
+            get_wry_response(request, responder, &base_bath)
         })));
 
         let handler: Arc<Mutex<Box<dyn Fn(Request<String>)>>> = Arc::new(Mutex::new(Box::new(move |req: Request<String>| {
@@ -233,15 +273,25 @@ impl WindowManager {
                     }
                 }
                 "request" => {
-                    if let Some(func) = commands.get(data.event_type.as_str()) {
+                    if let Some(func) = commands.get(data.command.unwrap().as_str()) {
                         Python::with_gil(|py| {
                             let args: PyObject = json_to_py(py, &data.args);
-                            let py_args = args.downcast_bound::<pyo3::types::PyTuple>(py).unwrap();
-                            let value = func.call1(py, py_args).unwrap();
-                            proxy.clone().send_event(UserEvent::Response(ResponseData {
-                                request_id: data.request_id,
-                                data: Box::new(py_to_json(py, value)),
-                            })).unwrap();
+                            let py_args = args.downcast_bound::<pyo3::types::PyList>(py).unwrap();
+                            if py_args.len() > 0 {
+                                let value = func.call1(py, PyTuple::new(py, py_args.iter().collect::<Vec<_>>()).unwrap()).unwrap();
+                                proxy.clone().send_event(UserEvent::Response(ResponseData {
+                                    request_id: data.request_id,
+                                    result: Box::new(py_to_json(py, value)),
+                                    error: Box::from(Value::Null),
+                                })).unwrap();
+                            } else {
+                                let _ = func.call0(py);
+                                proxy.clone().send_event(UserEvent::Response(ResponseData {
+                                    request_id: data.request_id,
+                                    result: Box::from(Value::Null),
+                                    error: Box::from(Value::Null),
+                                })).unwrap();
+                            }
                         });
                     }
                 }
@@ -278,9 +328,7 @@ impl WindowManager {
                 custom_protocols,
                 ..default_value
             };
-
             let new_window = create_new_window(
-                format!("Window {}", self.webviews.lock().unwrap().len() + 1),
                 web_view,
                 win.clone(),
                 &event_loop,
@@ -288,7 +336,13 @@ impl WindowManager {
             );
             let window_id = new_window.0.id();
             webview_windows.insert(window_id.clone(), new_window);
-            self.webviews.lock().unwrap().insert("main".to_string(), window_id.clone());
+            let label = win.label.clone().unwrap_or_else(|| {
+                format!(
+                    "Window {}",
+                    webview_cloned.lock().unwrap().len() + 1
+                )
+            });
+            webview_cloned.lock().unwrap().insert(label, window_id.clone());
         }
 
         event_loop.run(move |event, _, control_flow| {
@@ -298,15 +352,17 @@ impl WindowManager {
                     println!("Pywui started ...")
                 }
                 Event::UserEvent(UserEvent::Response(data)) => {
+                    println!("Sending response:: {:?}", data);
                     for (_, webview) in webview_windows.iter().clone() {
                         let js_code = format!(
                             r#"
-                                const event = new CustomEvent('{}', {{
-                                    detail: {}
-                                }});
-                                window.dispatchEvent(event);
+                                window.dispatchEvent(
+                                    new CustomEvent('{}', {{
+                                        detail: {{data: {}, error: {} }}
+                                    }})
+                                );
                             "#,
-                            data.request_id, data.data
+                            data.request_id.as_str(), data.result.to_string(), data.error.to_string()
                         );
                         webview.1.evaluate_script(js_code.as_str()).unwrap();
                     }
@@ -315,24 +371,31 @@ impl WindowManager {
                     for (_, webview) in webview_windows.iter().clone() {
                         let js_code = format!(
                             r#"
-                                const event = new CustomEvent('{}', {{
-                                    detail: {}
-                                }});
-                                window.dispatchEvent(event);
+                                window.dispatchEvent(
+                                    new CustomEvent('{}', {{
+                                        detail: {{ data: {} }}
+                                    }})
+                                );
                             "#,
-                            data.event, data.data
+                            data.event.as_str(), data.data.to_string()
                         );
                         webview.1.evaluate_script(js_code.as_str()).unwrap();
                     }
                 }
                 Event::UserEvent(
-                    UserEvent::Exit(window_id)
+                    UserEvent::Close(window_id)
                 ) => {
                     webview_windows.remove(&window_id);
-                    if webview_windows.len() == 0{
+                    if webview_windows.len() == 0 {
                         println!("Pywui exit ....");
                         *control_flow = ControlFlow::Exit
                     }
+                }
+                Event::UserEvent(
+                    UserEvent::Exit()
+                ) => {
+                    println!("Pywui exit ....");
+                    *control_flow = ControlFlow::Exit
                 }
                 Event::WindowEvent {
                     window_id,
