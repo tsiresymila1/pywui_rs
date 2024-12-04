@@ -1,0 +1,15 @@
+.title {
+    color: red;
+    text-align: center;
+    height: max-content;
+    background: aqua;
+    justify-items: center;
+}
+body {
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    background: rebeccapurple;
+    display: flex;
+    border-radius: 100px;
+}

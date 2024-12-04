@@ -10,7 +10,7 @@ use image::EncodableLayout;
 use pyo3::prelude::*;
 use pyo3::types::{PyFunction, PyTuple};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tao::{
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget},
     window::{Window, WindowBuilder, WindowId},
@@ -158,7 +158,7 @@ enum UserEvent {
 #[derive(Serialize, Deserialize)]
 struct IPCData {
     event_type: String,
-    command: Option<String>,
+    command: String,
     request_id: String,
     args: Value,
 }
@@ -166,8 +166,7 @@ struct IPCData {
 #[derive(Debug, Serialize, Deserialize)]
 struct ResponseData {
     request_id: String,
-    result: Box<Value>,
-    error: Box<Value>,
+    data: Box<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,8 +178,8 @@ struct EmitData {
 #[pyclass]
 struct WindowManager {
     webviews: Arc<Mutex<HashMap<String, WindowId>>>,
-    commands: Arc<Mutex<HashMap<String, Py<PyFunction>>>>,
-    listeners: Arc<Mutex<HashMap<String, Py<PyFunction>>>>,
+    command: Arc<Mutex<Py<PyFunction>>>,
+    listener: Arc<Mutex<Py<PyFunction>>>,
     config: Arc<Mutex<Config>>,
     proxy: Option<Arc<Mutex<EventLoopProxy<UserEvent>>>>,
     base_path: PathBuf,
@@ -189,26 +188,16 @@ struct WindowManager {
 #[pymethods]
 impl WindowManager {
     #[new]
-    #[pyo3(text_signature = "(config_path, assets_dir)")]
-    fn py_new(config_path: String, assets_dir: String) -> PyResult<Self> {
+    #[pyo3(text_signature = "(command, listener,config_path, assets_dir)")]
+    fn py_new(command: Py<PyFunction>, listener: Py<PyFunction>, config_path: String, assets_dir: String) -> PyResult<Self> {
         Ok(Self {
             webviews: Arc::new(Mutex::new(HashMap::new())),
-            commands: Arc::new(Mutex::new(HashMap::new())),
-            listeners: Arc::new(Mutex::new(HashMap::new())),
+            command: Arc::new(Mutex::new(command)),
+            listener: Arc::new(Mutex::new(listener)),
             config: Arc::new(Mutex::new(load_config(config_path.as_str()).unwrap())),
             proxy: None,
             base_path: PathBuf::from(assets_dir),
         })
-    }
-
-    #[pyo3(text_signature = "(self, name, callback)")]
-    fn add_command(&mut self, name: String, callback: Py<PyFunction>) {
-        self.commands.lock().unwrap().insert(name, callback);
-    }
-
-    #[pyo3(text_signature = "(self, name, callback)")]
-    fn add_listener(&mut self, name: String, callback: Py<PyFunction>) {
-        self.listeners.lock().unwrap().insert(name, callback);
     }
 
     #[pyo3(text_signature = "(self, event, data)")]
@@ -243,13 +232,9 @@ impl WindowManager {
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
         self.proxy = Some(Arc::new(Mutex::new(proxy.clone())));
-        let command = self.commands.clone();
-        let listener = self.listeners.clone();
+        let command = self.command.clone();
+        let listener = self.listener.clone();
         let config = self.config.lock().unwrap();
-
-        // Wrap listeners and commands inside Arc<Mutex> to allow shared ownership.
-        let listeners = listener.clone();
-        let commands = command.clone();
 
         let mut webview_cloned = self.webviews.clone();
         let base_bath = self.base_path.clone();
@@ -260,40 +245,28 @@ impl WindowManager {
 
         let handler: Arc<Mutex<Box<dyn Fn(Request<String>)>>> = Arc::new(Mutex::new(Box::new(move |req: Request<String>| {
             let data: IPCData = serde_json::from_str(req.body()).unwrap();
-            let listeners = listeners.lock().unwrap();
-            let commands = commands.lock().unwrap();
+            let listeners = listener.lock().unwrap();
+            let commands = command.lock().unwrap();
             match data.event_type.as_str() {
                 "event" => {
-                    if let Some(func) = listeners.get(data.event_type.as_str()) {
-                        Python::with_gil(|py| {
-                            let args: PyObject = json_to_py(py, &data.args);
-                            let py_args = args.downcast_bound::<pyo3::types::PyTuple>(py).unwrap();
-                            func.call1(py, py_args).unwrap();
-                        });
-                    }
+                    Python::with_gil(|py| {
+                        let new_args = json!({"event": data.command, "args": data.args});
+                        let args: PyObject = json_to_py(py, &new_args);
+                        let py_args = PyTuple::new(py, &[args]).unwrap();
+                        listeners.call1(py, py_args).unwrap();
+                    });
                 }
                 "request" => {
-                    if let Some(func) = commands.get(data.command.unwrap().as_str()) {
-                        Python::with_gil(|py| {
-                            let args: PyObject = json_to_py(py, &data.args);
-                            let py_args = args.downcast_bound::<pyo3::types::PyList>(py).unwrap();
-                            if py_args.len() > 0 {
-                                let value = func.call1(py, PyTuple::new(py, py_args.iter().collect::<Vec<_>>()).unwrap()).unwrap();
-                                proxy.clone().send_event(UserEvent::Response(ResponseData {
-                                    request_id: data.request_id,
-                                    result: Box::new(py_to_json(py, value)),
-                                    error: Box::from(Value::Null),
-                                })).unwrap();
-                            } else {
-                                let _ = func.call0(py);
-                                proxy.clone().send_event(UserEvent::Response(ResponseData {
-                                    request_id: data.request_id,
-                                    result: Box::from(Value::Null),
-                                    error: Box::from(Value::Null),
-                                })).unwrap();
-                            }
-                        });
-                    }
+                    Python::with_gil(|py| {
+                        let new_args = json!({"command": data.command, "args": data.args});
+                        let args: PyObject = json_to_py(py, &new_args);
+                        let py_args = PyTuple::new(py, &[args]).unwrap();
+                        let value = commands.call1(py, py_args).unwrap();
+                        proxy.clone().send_event(UserEvent::Response(ResponseData {
+                            request_id: data.request_id,
+                            data: Box::new(py_to_json(py, value)),
+                        })).unwrap();
+                    });
                 }
                 _ => {}
             }
@@ -358,11 +331,11 @@ impl WindowManager {
                             r#"
                                 window.dispatchEvent(
                                     new CustomEvent('{}', {{
-                                        detail: {{data: {}, error: {} }}
+                                        detail: {{data: {} }}
                                     }})
                                 );
                             "#,
-                            data.request_id.as_str(), data.result.to_string(), data.error.to_string()
+                            data.request_id.as_str(), data.data.to_string()
                         );
                         webview.1.evaluate_script(js_code.as_str()).unwrap();
                     }
