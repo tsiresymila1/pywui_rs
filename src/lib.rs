@@ -48,7 +48,7 @@ fn get_wry_response(
     };
 
     let file_path = base_path.join(relative_path);
-    println!("File path ::: {:?}: path: {}", file_path, request.uri());
+    println!("Assets:: {}", request.uri());
     if !file_path.exists() {
         responder.respond(
             Response::builder()
@@ -114,7 +114,7 @@ fn create_new_window(
         let rgba = image.into_raw();
         Icon::from_rgba(rgba, width, height).unwrap()
     };
-    let window = WindowBuilder::new()
+    let app = WindowBuilder::new()
         .with_title(window.title.unwrap_or("Window".to_string()))
         .with_inner_size(LogicalSize {
             width: window.width.unwrap_or(800),
@@ -136,7 +136,7 @@ fn create_new_window(
         .unwrap();
     let builder = WebViewBuilder::with_attributes(webview);
     #[cfg(not(target_os = "linux"))]
-    let webview = builder.with_initialization_script(get_init_script()).build(&window).unwrap();
+    let webview = builder.with_initialization_script(get_init_script()).build(&app).unwrap();
     #[cfg(target_os = "linux")]
     let webview = {
         use tao::platform::unix::WindowExtUnix;
@@ -144,7 +144,7 @@ fn create_new_window(
         let vbox = window.default_vbox().unwrap();
         builder.build_gtk(vbox).unwrap()
     };
-    (window, webview)
+    (app, webview)
 }
 
 #[derive(Debug)]
@@ -153,6 +153,7 @@ enum UserEvent {
     Emit(EmitData),
     Exit(),
     Close(WindowId),
+    UpdateWindow(String, Value, bool),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -175,7 +176,7 @@ struct EmitData {
     data: Box<Value>,
 }
 
-#[pyclass]
+#[pyclass(unsendable)]
 struct WindowManager {
     webviews: Arc<Mutex<HashMap<String, WindowId>>>,
     command: Arc<Mutex<Py<PyFunction>>>,
@@ -183,6 +184,15 @@ struct WindowManager {
     config: Arc<Mutex<Config>>,
     proxy: Option<Arc<Mutex<EventLoopProxy<UserEvent>>>>,
     base_path: PathBuf,
+    webview_windows: Arc<Mutex<HashMap<WindowId, (Window, WebView, String)>>>,
+
+}
+
+fn find_by_label<'a>(
+    map: &'a HashMap<WindowId, (Window, WebView, String)>,
+    label: &str,
+) -> Option<(&'a WindowId, &'a (Window, WebView, String))> {
+    map.iter().find(|(_, (_, _, lbl))| lbl == label)
 }
 
 #[pymethods]
@@ -197,6 +207,7 @@ impl WindowManager {
             config: Arc::new(Mutex::new(load_config(config_path.as_str()).unwrap())),
             proxy: None,
             base_path: PathBuf::from(assets_dir),
+            webview_windows: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -226,9 +237,30 @@ impl WindowManager {
         // webview.evaluate_script().unwrap()
     }
 
+    #[pyo3(text_signature = "(self, label, updates)")]
+    fn update_window(&self, label: &str, updates: PyObject) {
+        if let Some(proxy) = self.proxy.clone() {
+            Python::with_gil(|py| {
+                let updates_json: Value = py_to_json(py, updates);
+                proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, false)).unwrap();
+            })
+        };
+    }
+
+    #[pyo3(text_signature = "(self, label, updates)")]
+    fn update_webview(&self, label: &str, updates: PyObject) {
+        if let Some(proxy) = self.proxy.clone() {
+            Python::with_gil(|py| {
+                let updates_json: Value = py_to_json(py, updates);
+                proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, true)).unwrap();
+            })
+        };
+    }
+
+
     #[pyo3(text_signature = "(self)")]
     fn run(&mut self) {
-        let mut webview_windows: HashMap<WindowId, (Window, WebView)> = HashMap::new();
+        let webview_windows = Arc::clone(&self.webview_windows);
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
         self.proxy = Some(Arc::new(Mutex::new(proxy.clone())));
@@ -239,7 +271,7 @@ impl WindowManager {
         let mut webview_cloned = self.webviews.clone();
         let base_bath = self.base_path.clone();
 
-        let protocol_handler: Arc<Mutex<Box<dyn Fn(WebViewId, Request<Vec<u8>>, RequestAsyncResponder)>>> = Arc::new(Mutex::new(Box::new(move |id, request, responder| {
+        let protocol_handler: Arc<Mutex<Box<dyn Fn(WebViewId, Request<Vec<u8>>, RequestAsyncResponder) +  Send + Sync>>> = Arc::new(Mutex::new(Box::new(move |id, request, responder| {
             get_wry_response(request, responder, &base_bath)
         })));
 
@@ -308,13 +340,13 @@ impl WindowManager {
                 config.clone().icon.get_for_current_os(),
             );
             let window_id = new_window.0.id();
-            webview_windows.insert(window_id.clone(), new_window);
             let label = win.label.clone().unwrap_or_else(|| {
                 format!(
                     "Window {}",
                     webview_cloned.lock().unwrap().len() + 1
                 )
             });
+            webview_windows.lock().unwrap().insert(window_id.clone(), (new_window.0, new_window.1, label.clone()));
             webview_cloned.lock().unwrap().insert(label, window_id.clone());
         }
 
@@ -326,7 +358,7 @@ impl WindowManager {
                 }
                 Event::UserEvent(UserEvent::Response(data)) => {
                     println!("Sending response:: {:?}", data);
-                    for (_, webview) in webview_windows.iter().clone() {
+                    for (_, webview) in webview_windows.lock().unwrap().iter().clone() {
                         let js_code = format!(
                             r#"
                                 window.dispatchEvent(
@@ -341,7 +373,7 @@ impl WindowManager {
                     }
                 }
                 Event::UserEvent(UserEvent::Emit(data)) => {
-                    for (_, webview) in webview_windows.iter().clone() {
+                    for (_, webview) in webview_windows.lock().unwrap().iter().clone() {
                         let js_code = format!(
                             r#"
                                 window.dispatchEvent(
@@ -358,8 +390,9 @@ impl WindowManager {
                 Event::UserEvent(
                     UserEvent::Close(window_id)
                 ) => {
-                    webview_windows.remove(&window_id);
-                    if webview_windows.len() == 0 {
+                    let mut wm = webview_windows.lock().unwrap();
+                    wm.remove(&window_id);
+                    if wm.len() == 0 {
                         println!("Pywui exit ....");
                         *control_flow = ControlFlow::Exit
                     }
@@ -375,10 +408,106 @@ impl WindowManager {
                     event: WindowEvent::CloseRequested,
                     ..
                 } => {
-                    webview_windows.remove(&window_id);
-                    if webview_windows.len() == 0 {
-                        println!("Pywui exit ....");
-                        *control_flow = ControlFlow::Exit
+                    let mut wwin = webview_windows.lock().unwrap();
+                    if let Some(ww) = wwin.remove(&window_id) {
+                        if wwin.len() == 0 {
+                            *control_flow = ControlFlow::Exit
+                        } else if (ww.2.eq("main")) {
+                            println!("Main exit");
+                            *control_flow = ControlFlow::Exit;
+                        }
+                    }
+                }
+                Event::UserEvent(
+                    UserEvent::UpdateWindow(label, updates, is_webview)
+                ) => {
+                    if let Some((_id, (window, webview, _label))) = find_by_label(&webview_windows.lock().unwrap(), label.as_str()) {
+                        if is_webview {
+                            if let Some(url) = updates.get("url").and_then(|v| v.as_str()) {
+                                webview.load_url(url).unwrap();
+                            }
+                            if let Some(focus) = updates.get("focus").and_then(|v| v.as_bool()) {
+                                if focus {
+                                    webview.focus().expect("Error whe focusing webview")
+                                }
+                            }
+                            if let Some(script) = updates.get("script").and_then(|v| v.as_str()) {
+                                webview.evaluate_script(script).unwrap();
+                            }
+                            if let Some(visible) = updates.get("visible").and_then(|v| v.as_bool()) {
+                                webview.set_visible(visible).unwrap();
+                            }
+                            if let Some(html) = updates.get("html").and_then(|v| v.as_str()) {
+                                webview.load_html(html).unwrap();
+                            }
+                            if let Some(devtools) = updates.get("devtools").and_then(|v| v.as_bool()) {
+                                if devtools {
+                                    webview.close_devtools();
+                                } else {
+                                    webview.open_devtools();
+                                }
+                            }
+                            if let Some(clear) = updates.get("clear").and_then(|v| v.as_bool()) {
+                                if (clear) {
+                                    webview.clear_all_browsing_data().expect("Error when erased browsinf");
+                                }
+                            }
+                        } else {
+                            // Update other window properties
+                            if let Some(width) = updates.get("width").and_then(|v| v.as_i64()) {
+                                if let Some(height) = updates.get("height").and_then(|v| v.as_i64()) {
+                                    window.set_inner_size(LogicalSize {
+                                        width: width as u32,
+                                        height: height as u32,
+                                    });
+                                }
+                            }
+
+                            if let Some(resizable) = updates.get("resizable").and_then(|v| v.as_bool()) {
+                                window.set_resizable(resizable);
+                            }
+                            if let Some(minimizable) = updates.get("minimizable").and_then(|v| v.as_bool()) {
+                                window.set_minimizable(minimizable);
+                            }
+                            if let Some(maximizable) = updates.get("maximizable").and_then(|v| v.as_bool()) {
+                                window.set_maximizable(maximizable);
+                            }
+                            if let Some(closable) = updates.get("closable").and_then(|v| v.as_bool()) {
+                                window.set_closable(closable);
+                            }
+                            if let Some(fullscreen) = updates.get("fullscreen").and_then(|v| v.as_bool()) {
+                                window.set_fullscreen(if fullscreen {
+                                    Some(tao::window::Fullscreen::Borderless(None))
+                                } else {
+                                    None
+                                });
+                            }
+                            if let Some(visible) = updates.get("visible").and_then(|v| v.as_bool()) {
+                                window.set_visible(visible);
+                            }
+                            if let Some(always_on_top) = updates.get("always_on_top").and_then(|v| v.as_bool()) {
+                                window.set_always_on_top(always_on_top);
+                            }
+                            if let Some(title) = updates.get("title").and_then(|v| v.as_str()) {
+                                window.set_title(title);
+                            }
+                            if let Some(background_color) = updates.get("background_color").and_then(|v| {
+                                v.as_array().and_then(|arr| {
+                                    if arr.len() == 4 {
+                                        Some((
+                                            arr[0].as_u64()? as u8,
+                                            arr[1].as_u64()? as u8,
+                                            arr[2].as_u64()? as u8,
+                                            arr[3].as_u64()? as u8,
+                                        ))
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }) {
+                                window.set_background_color(Some(background_color));
+                            }
+                        }
                     }
                 }
                 _ => ()

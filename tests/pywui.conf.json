@@ -16,7 +16,7 @@
         "height": 500,
         "center": true,
         "decorations": false,
-        "visible": true,
+        "visible": false,
         "webview": {
           "url": "splashscreen.html"
         }
@@ -26,8 +26,9 @@
         "width": 1080,
         "height": 720,
         "titleBarStyle": "Transparent",
-        "visible": false,
-        "center": true
+        "visible": true,
+        "center": true,
+        "label": "main"
       }
     ]
   },

@@ -1,8 +1,12 @@
-from typing import Callable
+from typing import Callable, Union
 
 
 class WindowManager:
 
     def __init__(self, command: Callable, listener: Callable, config_path: str, assets_dir: str): ...
+
+    def emit(self, event: str, data: any): ...
+
+    def close_window(self, label: Union[str, None] = None): ...
 
     def run(self): ...
