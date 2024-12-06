@@ -17,14 +17,14 @@ def test2(name):
 
 @app.listener("listener")
 def listener1(name):
-    value = f"Hello {name}"
+    value = f"Listener {name}"
     print(value)
-    return value
 
 
 @app.on_start
 def on_start():
     print("App started ...")
+    print(app._manager.close_window("main"))
 
 
 @app.on_stop

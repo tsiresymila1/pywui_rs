@@ -28,7 +28,7 @@ class PyWui:
             return self._handler_request(info)
 
         def handle_event(info: dict):
-            return self._handler_request(info)
+            return self._handler_event(info)
 
         def handle_start(info: dict = None):
             return self._on_start(info)

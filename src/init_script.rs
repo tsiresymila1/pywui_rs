@@ -10,8 +10,8 @@ pub fn get_init_script() -> &'static str {
                         if (ev.detail) {
                             const error = ev.detail["error"];
                             const result = ev.detail["data"];
-                             clearTimeout(timer);
-                             window.removeEventListener(request_id, () => {})
+                            clearTimeout(timer);
+                            window.removeEventListener(request_id, () => {})
                             if (error) reject(new Error(error));
                             else resolve(result);
                         }
@@ -19,6 +19,12 @@ pub fn get_init_script() -> &'static str {
                     window.ipc.postMessage(JSON.stringify(message));
                 });
             },
+            emit(command, args=[]){
+                const request_id = `req_${ Date.now() }_${ Math.random() }`;
+                const message = { event_type: "event", command, args, request_id };
+                window.ipc.postMessage(JSON.stringify(message));
+            }
         };
+
     "#
 }

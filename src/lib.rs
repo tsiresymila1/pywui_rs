@@ -1,6 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -29,6 +29,10 @@ use crate::config::Config;
 use crate::init_script::get_init_script;
 use crate::util::{json_to_py, load_py_config, py_to_json};
 use crate::window::WindowAttributesConfig;
+
+fn main(){
+
+}
 
 mod config;
 mod util;
@@ -400,10 +404,10 @@ impl WindowManager {
                         let args: PyObject = json_to_py(py, &new_args);
                         let py_args = PyTuple::new(py, &[args]).unwrap();
                         let value = commands.call1(py, py_args).unwrap();
-                        // proxy.clone().send_event(UserEvent::Response(ResponseData {
-                        //     request_id: data.request_id,
-                        //     data: Box::new(py_to_json(py, value)),
-                        // })).unwrap();
+                        proxy.clone().send_event(UserEvent::Response(ResponseData {
+                            request_id: data.request_id,
+                            data: Box::new(py_to_json(py, value)),
+                        })).unwrap();
                     });
                 }
                 _ => {}
