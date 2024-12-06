@@ -2,7 +2,8 @@
   "build": {
     "beforeBuildCommand": "pnpm run build",
     "beforeDevCommand": "pnpm run dev",
-    "devPath": "https://tauri.app"
+    "devPath": "https://tauri.app",
+    "buildPath": "./assets"
   },
   "package": {
     "productName": "Name",

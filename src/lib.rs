@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Deref;
+use std::os::unix::raw::mode_t;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +18,7 @@ use tao::{
 };
 use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
-use tao::event_loop::EventLoopProxy;
+use tao::event_loop::{EventLoop, EventLoopProxy};
 use tao::window::Icon;
 use wry::{
     http::Request, RequestAsyncResponder, WebView, WebViewBuilder, WebViewExtMacOS, WebViewId,
@@ -26,7 +27,7 @@ use wry::WebViewAttributes;
 
 use crate::config::Config;
 use crate::init_script::get_init_script;
-use crate::util::{json_to_py, load_config, py_to_json};
+use crate::util::{json_to_py, load_py_config, py_to_json};
 use crate::window::WindowAttributesConfig;
 
 mod config;
@@ -181,10 +182,13 @@ struct WindowManager {
     webviews: Arc<Mutex<HashMap<String, WindowId>>>,
     command: Arc<Mutex<Py<PyFunction>>>,
     listener: Arc<Mutex<Py<PyFunction>>>,
+    on_start: Arc<Mutex<Py<PyFunction>>>,
+    on_stop: Arc<Mutex<Py<PyFunction>>>,
     config: Arc<Mutex<Config>>,
     proxy: Option<Arc<Mutex<EventLoopProxy<UserEvent>>>>,
     base_path: PathBuf,
     webview_windows: Arc<Mutex<HashMap<WindowId, (Window, WebView, String)>>>,
+    event_loop: EventLoop<UserEvent>,
 
 }
 
@@ -199,15 +203,25 @@ fn find_by_label<'a>(
 impl WindowManager {
     #[new]
     #[pyo3(text_signature = "(command, listener,config_path, assets_dir)")]
-    fn py_new(command: Py<PyFunction>, listener: Py<PyFunction>, config_path: String, assets_dir: String) -> PyResult<Self> {
+    fn py_new(
+        command: Py<PyFunction>,
+        listener: Py<PyFunction>,
+        on_start: Py<PyFunction>,
+        on_stop: Py<PyFunction>,
+        config: PyObject,
+        assets_dir: String,
+    ) -> PyResult<Self> {
         Ok(Self {
             webviews: Arc::new(Mutex::new(HashMap::new())),
             command: Arc::new(Mutex::new(command)),
             listener: Arc::new(Mutex::new(listener)),
-            config: Arc::new(Mutex::new(load_config(config_path.as_str()).unwrap())),
+            on_start: Arc::new(Mutex::new(on_start)),
+            on_stop: Arc::new(Mutex::new(on_stop)),
+            config: Arc::new(Mutex::new(load_py_config(config).unwrap())),
             proxy: None,
             base_path: PathBuf::from(assets_dir),
             webview_windows: Arc::new(Mutex::new(HashMap::new())),
+            event_loop: EventLoopBuilder::<UserEvent>::with_user_event().build(),
         })
     }
 
@@ -237,41 +251,133 @@ impl WindowManager {
         // webview.evaluate_script().unwrap()
     }
 
-    #[pyo3(text_signature = "(self, label, updates)")]
-    fn update_window(&self, label: &str, updates: PyObject) {
-        if let Some(proxy) = self.proxy.clone() {
-            Python::with_gil(|py| {
-                let updates_json: Value = py_to_json(py, updates);
-                proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, false)).unwrap();
-            })
-        };
+    #[pyo3(text_signature = "(self)")]
+    fn test_called_from_python(&self) {
+        println!("Here :::");
     }
 
     #[pyo3(text_signature = "(self, label, updates)")]
-    fn update_webview(&self, label: &str, updates: PyObject) {
-        if let Some(proxy) = self.proxy.clone() {
-            Python::with_gil(|py| {
-                let updates_json: Value = py_to_json(py, updates);
-                proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, true)).unwrap();
-            })
-        };
+    fn update_window(&self, py: Python, label: &str, updates: PyObject) -> PyResult<()> {
+        println!("Here :::");
+        // if let Some(proxy) = self.proxy.clone() {
+        // let updates_json: Value = py_to_json(py, updates);
+        // // proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, false)).unwrap();
+        // if let Some((_id, (window, webview, _label))) = find_by_label(&self.webview_windows.lock().unwrap(), label) {
+        //     // Update other window properties
+        //     if let Some(width) = updates_json.get("width").and_then(|v| v.as_i64()) {
+        //         if let Some(height) = updates_json.get("height").and_then(|v| v.as_i64()) {
+        //             window.set_inner_size(LogicalSize {
+        //                 width: width as u32,
+        //                 height: height as u32,
+        //             });
+        //         }
+        //     }
+        //     if let Some(resizable) = updates_json.get("resizable").and_then(|v| v.as_bool()) {
+        //         window.set_resizable(resizable);
+        //     }
+        //     if let Some(minimizable) = updates_json.get("minimizable").and_then(|v| v.as_bool()) {
+        //         window.set_minimizable(minimizable);
+        //     }
+        //     if let Some(maximizable) = updates_json.get("maximizable").and_then(|v| v.as_bool()) {
+        //         window.set_maximizable(maximizable);
+        //     }
+        //     if let Some(closable) = updates_json.get("closable").and_then(|v| v.as_bool()) {
+        //         window.set_closable(closable);
+        //     }
+        //     if let Some(fullscreen) = updates_json.get("fullscreen").and_then(|v| v.as_bool()) {
+        //         window.set_fullscreen(if fullscreen {
+        //             Some(tao::window::Fullscreen::Borderless(None))
+        //         } else {
+        //             None
+        //         });
+        //     }
+        //     if let Some(visible) = updates_json.get("visible").and_then(|v| v.as_bool()) {
+        //         window.set_visible(visible);
+        //     }
+        //     if let Some(always_on_top) = updates_json.get("always_on_top").and_then(|v| v.as_bool()) {
+        //         window.set_always_on_top(always_on_top);
+        //     }
+        //     if let Some(title) = updates_json.get("title").and_then(|v| v.as_str()) {
+        //         window.set_title(title);
+        //     }
+        //     if let Some(background_color) = updates_json.get("background_color").and_then(|v| {
+        //         v.as_array().and_then(|arr| {
+        //             if arr.len() == 4 {
+        //                 Some((
+        //                     arr[0].as_u64()? as u8,
+        //                     arr[1].as_u64()? as u8,
+        //                     arr[2].as_u64()? as u8,
+        //                     arr[3].as_u64()? as u8,
+        //                 ))
+        //             } else {
+        //                 None
+        //             }
+        //         })
+        //     }) {
+        //         window.set_background_color(Some(background_color));
+        //     }
+        // }
+        Ok(())
+        // };
+    }
+
+    #[pyo3(text_signature = "(self, label, updates)")]
+    fn update_webview(&self, py: Python, label: &str, updates: PyObject) -> PyResult<()> {
+        // if let Some(proxy) = self.proxy.clone() {
+        let updates_json: Value = py_to_json(py, updates);
+        // proxy.lock().unwrap().send_event(UserEvent::UpdateWindow(label.to_string(), updates_json, true)).unwrap();
+        if let Some((_id, (window, webview, _label))) = find_by_label(&self.webview_windows.lock().unwrap(), label) {
+            if let Some(url) = updates_json.get("url").and_then(|v| v.as_str()) {
+                webview.load_url(url).unwrap();
+            }
+            if let Some(focus) = updates_json.get("focus").and_then(|v| v.as_bool()) {
+                if focus {
+                    webview.focus().expect("Error whe focusing webview")
+                }
+            }
+            if let Some(script) = updates_json.get("script").and_then(|v| v.as_str()) {
+                webview.evaluate_script(script).unwrap();
+            }
+            if let Some(visible) = updates_json.get("visible").and_then(|v| v.as_bool()) {
+                webview.set_visible(visible).unwrap();
+            }
+            if let Some(html) = updates_json.get("html").and_then(|v| v.as_str()) {
+                webview.load_html(html).unwrap();
+            }
+            if let Some(devtools) = updates_json.get("devtools").and_then(|v| v.as_bool()) {
+                if devtools {
+                    webview.close_devtools();
+                } else {
+                    webview.open_devtools();
+                }
+            }
+            if let Some(clear) = updates_json.get("clear").and_then(|v| v.as_bool()) {
+                if (clear) {
+                    webview.clear_all_browsing_data().expect("Error when erased browser data");
+                }
+            }
+        }
+        Ok(())
+        // };
     }
 
 
     #[pyo3(text_signature = "(self)")]
     fn run(&mut self) {
-        let webview_windows = Arc::clone(&self.webview_windows);
-        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-        let proxy = event_loop.create_proxy();
-        self.proxy = Some(Arc::new(Mutex::new(proxy.clone())));
-        let command = self.command.clone();
-        let listener = self.listener.clone();
-        let config = self.config.lock().unwrap();
-
-        let mut webview_cloned = self.webviews.clone();
         let base_bath = self.base_path.clone();
 
-        let protocol_handler: Arc<Mutex<Box<dyn Fn(WebViewId, Request<Vec<u8>>, RequestAsyncResponder) +  Send + Sync>>> = Arc::new(Mutex::new(Box::new(move |id, request, responder| {
+        let config = self.config.lock().unwrap();
+        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        let proxy = event_loop.create_proxy();
+        let command = self.command.clone();
+        let listener = self.listener.clone();
+        self.proxy = Some(Arc::new(Mutex::new(proxy.clone())));
+        let on_start = self.on_start.clone();
+        let on_stop = self.on_stop.clone();
+        let webview_windows = Arc::clone(&self.webview_windows);
+        let mut webview_cloned = self.webviews.clone();
+
+        let protocol_handler: Arc<Mutex<Box<dyn Fn(WebViewId, Request<Vec<u8>>, RequestAsyncResponder) + Send + Sync>>> = Arc::new(Mutex::new(Box::new(move |id, request, responder| {
             get_wry_response(request, responder, &base_bath)
         })));
 
@@ -294,10 +400,10 @@ impl WindowManager {
                         let args: PyObject = json_to_py(py, &new_args);
                         let py_args = PyTuple::new(py, &[args]).unwrap();
                         let value = commands.call1(py, py_args).unwrap();
-                        proxy.clone().send_event(UserEvent::Response(ResponseData {
-                            request_id: data.request_id,
-                            data: Box::new(py_to_json(py, value)),
-                        })).unwrap();
+                        // proxy.clone().send_event(UserEvent::Response(ResponseData {
+                        //     request_id: data.request_id,
+                        //     data: Box::new(py_to_json(py, value)),
+                        // })).unwrap();
                     });
                 }
                 _ => {}
@@ -346,7 +452,7 @@ impl WindowManager {
                     webview_cloned.lock().unwrap().len() + 1
                 )
             });
-            webview_windows.lock().unwrap().insert(window_id.clone(), (new_window.0, new_window.1, label.clone()));
+            self.webview_windows.lock().unwrap().insert(window_id.clone(), (new_window.0, new_window.1, label.clone()));
             webview_cloned.lock().unwrap().insert(label, window_id.clone());
         }
 
@@ -354,10 +460,13 @@ impl WindowManager {
             *control_flow = ControlFlow::Wait;
             match event {
                 Event::NewEvents(StartCause::Init) => {
-                    println!("Pywui started ...")
+                    Python::with_gil(|py| {
+                        let args: PyObject = json_to_py(py, &json!({"label": "main"}));
+                        let py_args = PyTuple::new(py, &[args]).unwrap();
+                        on_start.lock().unwrap().call1(py, py_args).unwrap()
+                    });
                 }
                 Event::UserEvent(UserEvent::Response(data)) => {
-                    println!("Sending response:: {:?}", data);
                     for (_, webview) in webview_windows.lock().unwrap().iter().clone() {
                         let js_code = format!(
                             r#"
@@ -391,7 +500,14 @@ impl WindowManager {
                     UserEvent::Close(window_id)
                 ) => {
                     let mut wm = webview_windows.lock().unwrap();
-                    wm.remove(&window_id);
+                    if let Some(w) = wm.remove(&window_id) {
+                        let label = w.2.clone();
+                        Python::with_gil(|py| {
+                            let args: PyObject = json_to_py(py, &json!({"label": label}));
+                            let py_args = PyTuple::new(py, &[args]).unwrap();
+                            on_stop.lock().unwrap().call1(py, py_args).unwrap()
+                        });
+                    }
                     if wm.len() == 0 {
                         println!("Pywui exit ....");
                         *control_flow = ControlFlow::Exit
@@ -401,6 +517,11 @@ impl WindowManager {
                     UserEvent::Exit()
                 ) => {
                     println!("Pywui exit ....");
+                    Python::with_gil(|py| {
+                        let args: PyObject = json_to_py(py, &json!({"label": "main"}));
+                        let py_args = PyTuple::new(py, &[args]).unwrap();
+                        on_stop.lock().unwrap().call1(py, py_args).unwrap()
+                    });
                     *control_flow = ControlFlow::Exit
                 }
                 Event::WindowEvent {
@@ -410,6 +531,12 @@ impl WindowManager {
                 } => {
                     let mut wwin = webview_windows.lock().unwrap();
                     if let Some(ww) = wwin.remove(&window_id) {
+                        let label = ww.2.clone();
+                        Python::with_gil(|py| {
+                            let args: PyObject = json_to_py(py, &json!({"label": label}));
+                            let py_args = PyTuple::new(py, &[args]).unwrap();
+                            on_stop.lock().unwrap().call1(py, py_args).unwrap()
+                        });
                         if wwin.len() == 0 {
                             *control_flow = ControlFlow::Exit
                         } else if (ww.2.eq("main")) {
@@ -418,99 +545,7 @@ impl WindowManager {
                         }
                     }
                 }
-                Event::UserEvent(
-                    UserEvent::UpdateWindow(label, updates, is_webview)
-                ) => {
-                    if let Some((_id, (window, webview, _label))) = find_by_label(&webview_windows.lock().unwrap(), label.as_str()) {
-                        if is_webview {
-                            if let Some(url) = updates.get("url").and_then(|v| v.as_str()) {
-                                webview.load_url(url).unwrap();
-                            }
-                            if let Some(focus) = updates.get("focus").and_then(|v| v.as_bool()) {
-                                if focus {
-                                    webview.focus().expect("Error whe focusing webview")
-                                }
-                            }
-                            if let Some(script) = updates.get("script").and_then(|v| v.as_str()) {
-                                webview.evaluate_script(script).unwrap();
-                            }
-                            if let Some(visible) = updates.get("visible").and_then(|v| v.as_bool()) {
-                                webview.set_visible(visible).unwrap();
-                            }
-                            if let Some(html) = updates.get("html").and_then(|v| v.as_str()) {
-                                webview.load_html(html).unwrap();
-                            }
-                            if let Some(devtools) = updates.get("devtools").and_then(|v| v.as_bool()) {
-                                if devtools {
-                                    webview.close_devtools();
-                                } else {
-                                    webview.open_devtools();
-                                }
-                            }
-                            if let Some(clear) = updates.get("clear").and_then(|v| v.as_bool()) {
-                                if (clear) {
-                                    webview.clear_all_browsing_data().expect("Error when erased browsinf");
-                                }
-                            }
-                        } else {
-                            // Update other window properties
-                            if let Some(width) = updates.get("width").and_then(|v| v.as_i64()) {
-                                if let Some(height) = updates.get("height").and_then(|v| v.as_i64()) {
-                                    window.set_inner_size(LogicalSize {
-                                        width: width as u32,
-                                        height: height as u32,
-                                    });
-                                }
-                            }
-
-                            if let Some(resizable) = updates.get("resizable").and_then(|v| v.as_bool()) {
-                                window.set_resizable(resizable);
-                            }
-                            if let Some(minimizable) = updates.get("minimizable").and_then(|v| v.as_bool()) {
-                                window.set_minimizable(minimizable);
-                            }
-                            if let Some(maximizable) = updates.get("maximizable").and_then(|v| v.as_bool()) {
-                                window.set_maximizable(maximizable);
-                            }
-                            if let Some(closable) = updates.get("closable").and_then(|v| v.as_bool()) {
-                                window.set_closable(closable);
-                            }
-                            if let Some(fullscreen) = updates.get("fullscreen").and_then(|v| v.as_bool()) {
-                                window.set_fullscreen(if fullscreen {
-                                    Some(tao::window::Fullscreen::Borderless(None))
-                                } else {
-                                    None
-                                });
-                            }
-                            if let Some(visible) = updates.get("visible").and_then(|v| v.as_bool()) {
-                                window.set_visible(visible);
-                            }
-                            if let Some(always_on_top) = updates.get("always_on_top").and_then(|v| v.as_bool()) {
-                                window.set_always_on_top(always_on_top);
-                            }
-                            if let Some(title) = updates.get("title").and_then(|v| v.as_str()) {
-                                window.set_title(title);
-                            }
-                            if let Some(background_color) = updates.get("background_color").and_then(|v| {
-                                v.as_array().and_then(|arr| {
-                                    if arr.len() == 4 {
-                                        Some((
-                                            arr[0].as_u64()? as u8,
-                                            arr[1].as_u64()? as u8,
-                                            arr[2].as_u64()? as u8,
-                                            arr[3].as_u64()? as u8,
-                                        ))
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }) {
-                                window.set_background_color(Some(background_color));
-                            }
-                        }
-                    }
-                }
-                _ => ()
+                _ => {}
             }
         });
     }

@@ -13,6 +13,15 @@ pub fn load_config(file_path: &str) -> Result<Config> {
     Ok(config)
 }
 
+
+pub fn load_py_config(config: PyObject) -> Result<Config> {
+    Python::with_gil(|py| {
+        let value: Value = py_to_json(py, config);
+        let config: Config = serde_json::from_value(value).unwrap();
+        Ok(config)
+    })
+}
+
 pub fn json_to_py(py: Python, value: &Value) -> PyObject {
     match value {
         Value::Null => py.None(),
