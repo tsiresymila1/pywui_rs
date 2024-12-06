@@ -1,18 +1,9 @@
-use std::fs;
-
 use pyo3::{IntoPy, PyObject, Python};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use serde_json::{Number, Result, Value};
 
 use crate::config::Config;
-
-pub fn load_config(file_path: &str) -> Result<Config> {
-    let config_data = fs::read_to_string(file_path).unwrap();
-    let config: Config = serde_json::from_str(&config_data).unwrap();
-    Ok(config)
-}
-
 
 pub fn load_py_config(config: PyObject) -> Result<Config> {
     Python::with_gil(|py| {

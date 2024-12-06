@@ -47,6 +47,7 @@ class PyWui:
             config=config_dict,
             assets_dir=assets_dir
         )
+        print(self._manager)
         self._create_windows(config_dict)
 
     @classmethod
@@ -106,11 +107,17 @@ class PyWui:
 
     def _on_start(self, info: dict = None):
         for callback in self._on_start_listener:
-            callback()
+            try:
+                callback()
+            except Exception as e:
+                print("Error", e)
 
     def _on_stop(self, info: dict = None):
         for callback in self._on_stop_listener:
-            callback()
+            try:
+                callback()
+            except Exception as e:
+                print("Error", e)
 
     def _handler_request(self, info: dict):
         args = info['args']
