@@ -21,7 +21,7 @@ use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{EventLoop, EventLoopProxy};
 use tao::window::Icon;
 use wry::{
-    http::Request, RequestAsyncResponder, WebView, WebViewBuilder, WebViewExtMacOS, WebViewId,
+    http::Request, RequestAsyncResponder, WebView, WebViewBuilder, WebViewId,
 };
 use wry::WebViewAttributes;
 
